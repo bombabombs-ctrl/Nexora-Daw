@@ -1,63 +1,146 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, FolderOpen, Gauge, Headphones, Pause, Play, Plus, Save, Settings2, SlidersHorizontal, Square, Volume2, Waves } from 'lucide-react';
+import { Download, FolderOpen, Music2, Pause, Play, RotateCcw, Sparkles, Volume2, Waves } from 'lucide-react';
 import './styles.css';
 
-type Track = { name: string; color: string; volume: number; muted: boolean };
+type Track = { name: string; emoji: string; color: string; kind: 'kick' | 'snare' | 'hat' | 'tone'; volume: number; muted: boolean };
+type Project = { name: string; tempo: number; pattern: boolean[][]; tracks: Track[] };
 const STEPS = 16;
-const initialTracks: Track[] = [
-  { name: 'Drums', color: '#ff795f', volume: 82, muted: false },
-  { name: 'Bass', color: '#a78bfa', volume: 72, muted: false },
-  { name: 'Keys', color: '#42d4c8', volume: 68, muted: false },
+const STORAGE_KEY = 'nexora-project-v1';
+const starterTracks: Track[] = [
+  { name: 'Cassa', emoji: '🥁', color: '#ff806b', kind: 'kick', volume: 75, muted: false },
+  { name: 'Rullante', emoji: '👏', color: '#a68bfa', kind: 'snare', volume: 65, muted: false },
+  { name: 'Charleston', emoji: '✨', color: '#42cdbb', kind: 'hat', volume: 45, muted: false },
+  { name: 'Nota magica', emoji: '🎹', color: '#f5bc55', kind: 'tone', volume: 50, muted: false },
 ];
+const starterPattern = () => starterTracks.map((_, row) => Array.from({ length: STEPS }, (_, i) => row === 0 ? i % 4 === 0 : row === 1 ? i === 4 || i === 12 : row === 2 ? i % 2 === 0 : i === 2 || i === 6 || i === 10 || i === 14));
+function loadProject(): Project {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) return JSON.parse(saved) as Project;
+  } catch { /* Start with the demo if browser storage is unavailable. */ }
+  return { name: 'La mia prima canzone', tempo: 110, pattern: starterPattern(), tracks: starterTracks };
+}
 
 function App() {
+  const [project, setProject] = useState<Project>(loadProject);
   const [playing, setPlaying] = useState(false);
-  const [tempo, setTempo] = useState(118);
-  const [selected, setSelected] = useState(0);
-  const [tracks, setTracks] = useState(initialTracks);
-  const [pattern, setPattern] = useState<boolean[][]>(() => initialTracks.map((_, row) => Array.from({ length: STEPS }, (_, i) => row === 0 ? [0, 4, 8, 12].includes(i) : row === 1 ? [0, 3, 8, 11].includes(i) : [2, 6, 10, 14].includes(i))));
+  const [step, setStep] = useState(-1);
+  const [message, setMessage] = useState('Premi ▶ e ascolta la tua musica!');
   const audio = useRef<AudioContext | null>(null);
+  const nextStep = useRef(0);
+  const fileInput = useRef<HTMLInputElement>(null);
 
-  useEffect(() => () => { audio.current?.close(); }, []);
-  const toggleStep = (row: number, step: number) => setPattern(current => current.map((line, r) => r === row ? line.map((on, s) => s === step ? !on : on) : line));
-  const flipMute = (index: number) => setTracks(current => current.map((track, i) => i === index ? { ...track, muted: !track.muted } : track));
+  useEffect(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(project)); } catch { /* Saving a file is still available. */ } }, [project]);
+  useEffect(() => () => { if (audio.current && audio.current.state !== 'closed') void audio.current.close(); }, []);
 
-  const preview = (frequency: number, duration = 0.12) => {
-    const context = audio.current ?? new AudioContext();
-    audio.current = context;
-    const oscillator = context.createOscillator();
+  const playSound = (track: Track, when: number) => {
+    const context = audio.current;
+    if (!context || track.muted) return;
     const gain = context.createGain();
-    oscillator.type = 'triangle';
-    oscillator.frequency.value = frequency;
-    gain.gain.setValueAtTime(0.0001, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + duration);
-    oscillator.connect(gain).connect(context.destination);
-    oscillator.start(); oscillator.stop(context.currentTime + duration + 0.02);
+    gain.gain.value = Math.max(0.01, track.volume / 100) * 0.22;
+    gain.connect(context.destination);
+    if (track.kind === 'kick') {
+      const osc = context.createOscillator();
+      osc.type = 'sine'; osc.frequency.setValueAtTime(130, when); osc.frequency.exponentialRampToValueAtTime(42, when + 0.16);
+      gain.gain.setValueAtTime(gain.gain.value, when); gain.gain.exponentialRampToValueAtTime(0.001, when + 0.2);
+      osc.connect(gain); osc.start(when); osc.stop(when + 0.21);
+    } else if (track.kind === 'snare' || track.kind === 'hat') {
+      const length = context.sampleRate * (track.kind === 'hat' ? 0.045 : 0.12);
+      const buffer = context.createBuffer(1, length, context.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+      const noise = context.createBufferSource(); noise.buffer = buffer;
+      const filter = context.createBiquadFilter(); filter.type = 'highpass'; filter.frequency.value = track.kind === 'hat' ? 6500 : 1000;
+      noise.connect(filter).connect(gain); gain.gain.setValueAtTime(gain.gain.value, when); gain.gain.exponentialRampToValueAtTime(0.001, when + (track.kind === 'hat' ? 0.045 : 0.13));
+      noise.start(when);
+    } else {
+      const osc = context.createOscillator(); osc.type = 'triangle';
+      const notes = [261.63, 293.66, 329.63, 392, 440, 392, 329.63, 293.66];
+      osc.frequency.value = notes[Math.floor(nextStep.current / 2) % notes.length];
+      gain.gain.setValueAtTime(gain.gain.value, when); gain.gain.exponentialRampToValueAtTime(0.001, when + 0.22);
+      osc.connect(gain); osc.start(when); osc.stop(when + 0.23);
+    }
   };
 
-  const addTrack = () => setTracks(current => [...current, { name: `Track ${current.length + 1}`, color: '#f4b942', volume: 70, muted: false }]);
+  useEffect(() => {
+    if (!playing) { setStep(-1); return; }
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const current = nextStep.current;
+      setStep(current);
+      const context = audio.current;
+      if (context) project.pattern.forEach((line, row) => { if (line[current]) playSound(project.tracks[row], context.currentTime); });
+      nextStep.current = (current + 1) % STEPS;
+    };
+    if (audio.current?.state === 'suspended') void audio.current.resume();
+    tick();
+    const timer = window.setInterval(tick, 60000 / Math.max(40, Math.min(240, project.tempo)) / 4);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [playing, project.tempo, project.pattern, project.tracks]);
+
+  const updateProject = (patch: Partial<Project>) => setProject(current => ({ ...current, ...patch }));
+  const toggleCell = (row: number, col: number) => updateProject({ pattern: project.pattern.map((line, r) => line.map((on, c) => r === row && c === col ? !on : on)) });
+  const togglePlay = async () => {
+    if (!playing) {
+      const Audio = window.AudioContext;
+      if (!Audio) { setMessage('Il tuo browser non supporta l’audio. Prova con Chrome o Edge.'); return; }
+      audio.current ??= new Audio();
+      if (audio.current.state === 'suspended') await audio.current.resume();
+      setMessage('Che ritmo! Puoi cambiare i quadratini mentre suona.');
+      setPlaying(true);
+    } else { setPlaying(false); setMessage('Musica in pausa. Premi ▶ per ripartire!'); }
+  };
+  const changeTrack = (index: number, patch: Partial<Track>) => updateProject({ tracks: project.tracks.map((track, i) => i === index ? { ...track, ...patch } : track) });
+  const clearPattern = () => { updateProject({ pattern: project.tracks.map(() => Array(STEPS).fill(false)) }); setMessage('Tutto pulito! Tocca i quadratini per creare un nuovo ritmo.'); };
+  const makeSurprise = () => {
+    updateProject({ pattern: project.tracks.map((_, row) => Array.from({ length: STEPS }, (_, i) => row === 0 ? i % 4 === 0 : row === 1 ? Math.random() > 0.72 : row === 2 ? Math.random() > 0.48 : Math.random() > 0.78)) });
+    setMessage('Ecco un ritmo a sorpresa!');
+  };
+  const saveFile = () => {
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob); const link = document.createElement('a');
+    link.href = url; link.download = `${project.name.trim().replace(/[^a-z0-9-_]+/gi, '-') || 'nexora-progetto'}.nexora.json`; link.click(); URL.revokeObjectURL(url);
+    setMessage('Progetto scaricato! Lo ritrovi nella cartella Download.');
+  };
+  const openFile = async (file?: File) => {
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text()) as Project;
+      if (!data.name || !Array.isArray(data.pattern) || !Array.isArray(data.tracks) || data.pattern.length !== data.tracks.length || data.pattern.some(row => !Array.isArray(row) || row.length !== STEPS)) throw new Error('file non valido');
+      updateProject({ name: data.name, tempo: Math.max(40, Math.min(240, Number(data.tempo) || 110)), pattern: data.pattern.map(row => row.map(Boolean)), tracks: data.tracks });
+      setPlaying(false); setMessage('Progetto aperto!');
+    } catch { setMessage('Non riesco ad aprire questo file. Scegli un progetto Nexora valido.'); }
+    if (fileInput.current) fileInput.current.value = '';
+  };
+
   return <div className="app-shell">
     <header className="topbar">
-      <div className="brand"><div className="brand-mark"><Waves size={19} /></div><strong>NEXORA</strong><span>DAW</span></div>
-      <div className="project"><span>Untitled project</span><small>Local session</small></div>
-      <div className="top-actions"><button className="icon-button" title="Open project"><FolderOpen size={18}/></button><button className="icon-button" title="Save project"><Save size={18}/></button><button className="icon-button" title="Settings"><Settings2 size={18}/></button></div>
+      <div className="brand"><div className="brand-mark"><Waves size={23} /></div><div><strong>NEXORA</strong><span>IL MIO STUDIO MUSICALE</span></div></div>
+      <div className="project-name"><label htmlFor="song-name">La mia canzone</label><input id="song-name" value={project.name} maxLength={40} onChange={event => updateProject({ name: event.target.value })} aria-label="Nome della canzone" /></div>
+      <div className="top-actions"><input ref={fileInput} className="file-input" type="file" accept=".json,.nexora.json,application/json" onChange={event => void openFile(event.target.files?.[0])} /><button className="secondary-button" onClick={() => fileInput.current?.click()}><FolderOpen size={19}/> <span>Apri</span></button><button className="secondary-button" onClick={saveFile}><Download size={19}/> <span>Salva</span></button></div>
     </header>
-    <main>
-      <section className="transport panel">
-        <button className={`transport-button ${playing ? 'active' : ''}`} onClick={() => setPlaying(value => !value)}>{playing ? <Pause size={18}/> : <Play size={18}/>}</button>
-        <button className="stop-button" onClick={() => setPlaying(false)}><Square size={15}/></button>
-        <div className="tempo"><Gauge size={17}/><label>BPM <input type="number" min="40" max="240" value={tempo} onChange={event => setTempo(Number(event.target.value))}/></label></div>
-        <div className="transport-spacer"/><span className="timecode">00:00:00:00</span><span className="ready"><i/> Audio ready</span>
+    <main className="main-content">
+      <section className="welcome"><div><span className="eyebrow">CIAO, MUSICISTA! 👋</span><h1>Costruiamo un ritmo!</h1><p>Tocca i quadratini e inventa la tua musica.</p></div><div className="music-doodle" aria-hidden="true">🎵</div></section>
+      <section className="controls card" aria-label="Controlli musica">
+        <button className={`play-button ${playing ? 'is-playing' : ''}`} onClick={() => void togglePlay()} aria-label={playing ? 'Pausa' : 'Riproduci'}>{playing ? <Pause fill="currentColor" size={25}/> : <Play fill="currentColor" size={25}/>}<span>{playing ? 'PAUSA' : 'ASCOLTA'}</span></button>
+        <div className="tempo-control"><label htmlFor="tempo">VELOCITÀ</label><div className="tempo-row"><input id="tempo" type="range" min="60" max="180" value={project.tempo} onChange={event => updateProject({ tempo: Number(event.target.value) })} /><strong>{project.tempo}<small> BPM</small></strong></div><div className="tempo-hints"><span>Piano 🐢</span><span>Veloce 🐇</span></div></div>
+        <div className="control-actions"><button className="action-button surprise" onClick={makeSurprise}><Sparkles size={19}/> Sorprendimi!</button><button className="action-button clear" onClick={clearPattern}><RotateCcw size={18}/> Ricomincia</button></div>
       </section>
-      <div className="workspace">
-        <aside className="sidebar panel"><div className="section-title">LIBRARY <Plus size={15}/></div><div className="library-item selected"><Waves size={16}/> Patterns <b>1</b></div><div className="library-item"><FolderOpen size={16}/> Samples <b>0</b></div><div className="library-item"><Headphones size={16}/> Instruments <b>3</b></div><div className="section-title lower">TOOLS</div><div className="library-item"><Activity size={16}/> Audio effects</div><div className="library-item"><SlidersHorizontal size={16}/> Mixer presets</div><div className="tip"><strong>Local-first</strong><p>Your project stays in this browser session until export is added.</p></div></aside>
-        <section className="sequencer panel"><div className="panel-heading"><div><span className="eyebrow">PATTERN 01</span><h2>Neon pulse</h2></div><button className="small-button"><Plus size={14}/> Add pattern</button></div><div className="grid-header"><span>TRACK</span>{Array.from({ length: STEPS }, (_, i) => <span key={i}>{i + 1}</span>)}</div>{tracks.map((track, row) => <div className="step-row" key={track.name}><button className={`track-name ${selected === row ? 'chosen' : ''}`} onClick={() => setSelected(row)}><i style={{ background: track.color }}/>{track.name}</button>{Array.from({ length: STEPS }, (_, step) => <button key={step} aria-label={`${track.name} step ${step + 1}`} className={`step ${pattern[row]?.[step] ? 'on' : ''} ${step % 4 === 0 ? 'beat' : ''}`} style={pattern[row]?.[step] ? { '--track-color': track.color } as React.CSSProperties : undefined} onClick={() => { toggleStep(row, step); preview(150 + row * 80); }}/>)}</div>)}<button className="add-track" onClick={addTrack}><Plus size={15}/> Add track</button><div className="piano"><div className="piano-label">PIANO ROLL <span>{tracks[selected]?.name ?? 'Track'}</span></div><div className="piano-grid">{Array.from({ length: 32 }, (_, i) => <button key={i} onClick={() => preview(220 * Math.pow(2, (i % 12) / 12))} className={i % 7 === 0 ? 'note active-note' : i % 5 === 0 ? 'note soft-note' : 'note'} style={{ left: `${(i / 32) * 100}%` }}/>)}</div></div></section>
-        <aside className="mixer panel"><div className="section-title">MIXER <SlidersHorizontal size={15}/></div>{tracks.map((track, index) => <div className="channel" key={track.name}><div className="channel-top"><i style={{ background: track.color }}/><strong>{track.name}</strong><button onClick={() => flipMute(index)} className={track.muted ? 'muted' : ''}>{track.muted ? 'M' : 'M'}</button></div><div className="meter"><span style={{ height: `${track.muted ? 8 : track.volume}%`, background: track.color }}/></div><input aria-label={`${track.name} volume`} type="range" min="0" max="100" value={track.volume} onChange={event => setTracks(current => current.map((item, i) => i === index ? { ...item, volume: Number(event.target.value) } : item))}/><div className="channel-bottom"><Volume2 size={13}/><span>{track.volume}%</span></div></div>)}</aside>
-      </div>
+      <div className="hint" role="status"><span>💡</span>{message}</div>
+      <section className="sequencer card">
+        <div className="section-heading"><div><h2><Music2 size={22}/> Il tuo ritmo</h2><p>Ogni riga è uno strumento. Accendi o spegni i quadratini!</p></div><div className="step-legend"><i/> Sta suonando</div></div>
+        <div className="beat-labels"><span className="instrument-label">STRUMENTI</span>{Array.from({ length: STEPS }, (_, i) => <span className={i % 4 === 0 ? 'beat-number strong' : 'beat-number'} key={i}>{i % 4 === 0 ? `${i / 4 + 1}` : '·'}</span>)}</div>
+        <div className="tracks">{project.tracks.map((track, row) => <div className={`track-row ${track.muted ? 'muted' : ''}`} key={`${track.name}-${row}`}>
+          <button className="track-name" onClick={() => changeTrack(row, { muted: !track.muted })} title={track.muted ? 'Attiva strumento' : 'Silenzia strumento'}><span className="track-emoji">{track.emoji}</span><span className="track-title">{track.name}</span><Volume2 size={16} className="volume-icon"/></button>
+          <div className="steps-grid">{project.pattern[row]?.map((on, col) => <button key={col} aria-label={`${track.name}, battito ${col + 1}, ${on ? 'acceso' : 'spento'}`} aria-pressed={on} className={`step-cell ${on ? 'on' : ''} ${step === col ? 'current' : ''} ${col % 4 === 0 ? 'bar-start' : ''}`} style={{ '--track-color': track.color } as React.CSSProperties} onClick={() => toggleCell(row, col)} />)}</div>
+        </div>)}</div>
+        <div className="volume-panel"><span>🔊 VOLUME DEGLI STRUMENTI</span>{project.tracks.map((track, index) => <label className="volume-control" key={`vol-${track.name}-${index}`}><span>{track.emoji}</span><input aria-label={`Volume ${track.name}`} type="range" min="0" max="100" value={track.volume} onChange={event => changeTrack(index, { volume: Number(event.target.value) })} style={{ '--track-color': track.color } as React.CSSProperties} /></label>)}</div>
+      </section>
+      <div className="tip-card"><span>🌟</span><p><strong>Trucchetto:</strong> prova ad accendere i quadratini diversi, poi premi “Ascolta”. Ogni riga fa un suono diverso. La tua canzone si salva automaticamente su questo dispositivo!</p></div>
     </main>
-    <footer><span>Nexora DAW 0.1.0</span><span>Web Audio preview engine</span><span className="footer-right">No account required · <a href="https://github.com/bombabombs-ctrl/Nexora-Daw">Source</a></span></footer>
+    <footer><span>Nexora DAW · Fatto per divertirsi con la musica</span><span>Progetto privato, salvato sul tuo dispositivo</span></footer>
   </div>;
 }
 
